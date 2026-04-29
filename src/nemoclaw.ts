@@ -189,6 +189,19 @@ function hasNoLiveSandboxes() {
   return parseLiveSandboxNames(liveList.output).size === 0;
 }
 
+// Returns true only when the openshell-cluster gateway Docker container is
+// actually running. `openshell sandbox list` reads local state and exits 0
+// even when the container is stopped, so it cannot be used as a gateway-alive
+// probe. docker inspect is the authoritative source. See #2673.
+function isGatewayContainerRunning(): boolean {
+  const container = `openshell-cluster-${NEMOCLAW_GATEWAY_NAME}`;
+  const result = dockerCapture(
+    ["inspect", "--type", "container", "--format", "{{.State.Running}}", container],
+    { ignoreError: true },
+  );
+  return result.status === 0 && String(result.output || "").trim() === "true";
+}
+
 function isMissingSandboxDeleteResult(output = ""): boolean {
   return /\bNotFound\b|\bNot Found\b|sandbox not found|sandbox .* not found|sandbox .* not present|sandbox does not exist|no such sandbox/i.test(
     stripAnsi(output),
@@ -1399,8 +1412,7 @@ function makeConflictProbe() {
   let gatewayAlive: boolean | null = null;
   const isGatewayAlive = (): boolean => {
     if (gatewayAlive === null) {
-      const result = captureOpenshell(["sandbox", "list"], { ignoreError: true });
-      gatewayAlive = result.status === 0;
+      gatewayAlive = isGatewayContainerRunning();
     }
     return gatewayAlive;
   };
@@ -3774,11 +3786,13 @@ async function sandboxSnapshot(sandboxName: string, subArgs: string[]) {
   switch (subcommand) {
     case "create": {
       const opts = parseSnapshotCreateFlags(subArgs.slice(1));
-      const isLive = captureOpenshell(["sandbox", "list"], { ignoreError: true });
-      if (isLive.status !== 0) {
+      if (!isGatewayContainerRunning()) {
         console.error("  Failed to query live sandbox state from OpenShell.");
+        console.error(`  Gateway container 'openshell-cluster-${NEMOCLAW_GATEWAY_NAME}' is not running.`);
+        console.error("  Start it with: openshell gateway start --name nemoclaw");
         process.exit(1);
       }
+      const isLive = captureOpenshell(["sandbox", "list"], { ignoreError: true });
       const liveNames = parseLiveSandboxNames(isLive.output || "");
       if (!liveNames.has(sandboxName)) {
         console.error(`  Sandbox '${sandboxName}' is not running. Cannot create snapshot.`);
@@ -3839,11 +3853,13 @@ async function sandboxSnapshot(sandboxName: string, subArgs: string[]) {
         parsed.targetSandbox === sandboxName
           ? sandboxName
           : validateName(parsed.targetSandbox, "target sandbox name");
-      const isLive = captureOpenshell(["sandbox", "list"], { ignoreError: true });
-      if (isLive.status !== 0) {
+      if (!isGatewayContainerRunning()) {
         console.error("  Failed to query live sandbox state from OpenShell.");
+        console.error(`  Gateway container 'openshell-cluster-${NEMOCLAW_GATEWAY_NAME}' is not running.`);
+        console.error("  Start it with: openshell gateway start --name nemoclaw");
         process.exit(1);
       }
+      const isLive = captureOpenshell(["sandbox", "list"], { ignoreError: true });
       const liveNames = parseLiveSandboxNames(isLive.output || "");
       if (!liveNames.has(targetSandbox)) {
         // Self-restore: cannot auto-create, there is no source to clone from.
